@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grup XA - By Rafli</title>
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="shortcut icon" href="Screenshot_22-Jul_10-50-34_17883.png" type="image/x-icon">
+    <style>
+        .chat-img-thumb {
+            max-width: 200px;
+            max-height: 200px;
+            border-radius: 8px;
+            margin-top: 5px;
+            cursor: pointer;
+        }
+        .action-btn {
+            font-size: 11px;
+            color: #666;
+            cursor: pointer;
+            margin-left: 10px;
+            text-decoration: underline;
+            font-weight: bold;
+        }
+        .action-btn:hover { color: #128c7e; }
+        .action-btn.delete { color: #d9534f; }
+        .action-btn.delete:hover { color: #a94442; }
+        
+        .time-stamp {
+            font-size: 10px;
+            color: #888;
+            margin-left: 8px;
+            float: right;
+            margin-top: 2px;
+        }
+
+        /* Overlay Drag and Drop */
+        #drag-overlay {
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(18, 140, 126, 0.85); z-index: 10000;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            color: white; font-size: 20px; font-weight: bold;
+            pointer-events: none;
+        }
+
+        #img-modal {
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(0,0,0,0.85); z-index: 9999;
+            display: flex; align-items: center; justify-content: center;
+        }
+        #img-modal img { max-width: 90vw; max-height: 90vh; border-radius: 8px; }
+    </style>
+</head>
+<body>
+
+    <!-- Drag Overlay -->
+    <div id="drag-overlay" class="hidden">
+        <div style="font-size: 50px;">📁</div>
+        <div>Lepaskan file di sini untuk mengirim (Maks 100MB)</div>
+    </div>
+
+    <div id="login-screen" class="screen">
+        <div class="box">
+            <h2>Masuk Grup Chat</h2>
+            <input type="text" id="username-input" placeholder="Masukkan Username..." autocomplete="off">
+            <button onclick="login()">Masuk</button>
+        </div>
+    </div>
+
+    <div id="chat-screen" class="screen hidden">
+        <header>
+            <h3>Grup Diskusi WLAN</h3>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <span id="user-display"></span>
+                <button onclick="changeUsername()" style="background:#54656f; font-size:12px; border:none; padding:6px 10px; border-radius:20px; color:white; cursor:pointer; font-weight:bold;">Ganti Nama</button>
+            </div>
+        </header>
+        
+        <div id="online-list" style="background: #e9ecef; padding: 12px 25px; font-size: 15px; color: #555; border-bottom: 1px solid #ddd;">
+            Online: <span id="users-container"></span>
+        </div>
+        
+        <div id="chat-box"></div>
+
+        <div id="reply-preview" class="hidden" style="background: #f0f2f5; padding: 8px 15px; border-left: 4px solid #128c7e; display: flex; justify-content: space-between; align-items: center; font-size: 13px;">
+            <div>
+                <span id="reply-target-user" style="font-weight: bold; color: #128c7e; display: block;"></span>
+                <span id="reply-target-text" style="color: #555;"></span>
+            </div>
+            <button onclick="cancelReply()" style="background: transparent; border: none; font-size: 16px; cursor: pointer; color: #888;">✕</button>
+        </div>
+
+        <div class="input-area">
+            <input type="text" id="msg-input" placeholder="Tulis pesan atau drag file ke sini...">
+            <label for="file-input" class="file-btn">📎</label>
+            <input type="file" id="file-input" style="display:none;" onchange="sendFile(this.files[0])">
+            
+            <button id="vn-btn" onclick="toggleRecord()" style="background: transparent; display: flex; align-items: center; justify-content: center; width: 35px; height: 35px; border: none; cursor: pointer; flex-shrink: 0; padding: 0;">
+                <svg id="vn-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#54656f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+                    <path d="M19 10v1a7 7 0 0 1-14 0v-1"/>
+                    <line x1="12" x2="12" y1="18" y2="22"/>
+                </svg>
+            </button>
+            <button onclick="sendMessage()">Kirim</button>
+        </div>
+    </div>
+
+    <!-- Preview Foto Full -->
+    <div id="img-modal" class="hidden" onclick="closeImagePreview()">
+        <img id="preview-src" src="" alt="Preview">
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io({ transports: ['websocket', 'polling'] });
+        
+        let currentUsername = localStorage.getItem('chat_username');
+        let activeReply = null;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
+
+        function scrollToBottom() {
+            const chatBox = document.getElementById('chat-box');
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        // Format waktu ke HH.MM
+        function formatTime(timestamp) {
+            const d = new Date(Number(timestamp));
+            const hours = String(d.getHours()).padStart(2, '0');
+            const minutes = String(d.getMinutes()).padStart(2, '0');
+            return `${hours}.${minutes}`;
+        }
+
+        if (currentUsername) {
+            socket.emit('check username', currentUsername, (res) => {
+                if (res.success) showChatScreen();
+                else { localStorage.removeItem('chat_username'); window.location.reload(); }
+            });
+        }
+
+        function login() {
+            const username = document.getElementById('username-input').value.trim();
+            if (!username) return;
+            socket.emit('check username', username, (res) => {
+                if (res.success) {
+                    localStorage.setItem('chat_username', username);
+                    currentUsername = username;
+                    showChatScreen();
+                } else alert(res.message);
+            });
+        }
+
+        function appendMessage(data) {
+            if (!data) return;
+            const chatBox = document.getElementById('chat-box');
+            const msgDiv = document.createElement('div');
+            msgDiv.classList.add('msg');
+            
+            const msgId = data.id || data[0];
+            const username = data.username || data[1];
+            const text = data.text !== undefined ? data.text : data[2];
+            const filePath = data.filePath !== undefined ? data.filePath : data[3];
+            const fileName = data.fileName !== undefined ? data.fileName : data[4];
+            const replyToUser = data.replyToUser !== undefined ? data.replyToUser : data[5];
+            const replyToText = data.replyToText !== undefined ? data.replyToText : data[6];
+            const createdAt = data.created_at || data[7];
+
+            msgDiv.id = `msg-${msgId}`;
+            if (username === currentUsername) msgDiv.classList.add('my-msg');
+
+            let content = '';
+            if (replyToUser && replyToUser.trim() !== '') {
+                content += `<div style="background: rgba(0,0,0,0.05); padding: 5px 8px; border-left: 3px solid #128c7e; border-radius: 4px; margin-bottom: 5px; font-size: 12px;">
+                    <strong style="color: #128c7e;">${replyToUser}</strong><br><span style="color: #555;">${replyToText}</span>
+                </div>`;
+            }
+
+            content += `<strong>${username}:</strong> `;
+            content += `<span id="text-${msgId}">${text || ''}</span>`;
+            
+            if (filePath && filePath.trim() !== '') {
+                const ext = fileName ? fileName.split('.').pop().toLowerCase() : '';
+                const isImage = ['jpg','jpeg','png','gif','webp','bmp'].includes(ext);
+                const isAudio = ['webm','mp3','ogg','wav','m4a'].includes(ext);
+                if (isImage) {
+                    content += `<br><img src="${filePath}" class="chat-img-thumb" onclick="openImagePreview('${filePath}')" onload="scrollToBottom()" />`;
+                } else if (isAudio) {
+                    content += `<br><audio controls style="max-width: 100%; margin-top: 5px;"><source src="${filePath}"></audio>`;
+                } else {
+                    content += `<br><a href="${filePath}" download="${fileName}">📄 Download ${fileName}</a>`;
+                }
+            }
+
+            // Aksi & Timestamp
+            content += `<div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px;">`;
+            content += `<div>`;
+            content += `<span class="action-btn" onclick="setReply('${username}', '${text || fileName || 'Media'}')">↩ Reply</span>`;
+
+            if (username === currentUsername) {
+                if (text && text.trim() !== '') {
+                    content += `<span class="action-btn" onclick="editMsg(${msgId})">✏ Edit</span>`;
+                }
+                
+                const selisihWaktu = Date.now() - Number(createdAt);
+                if (selisihWaktu <= 60000) {
+                    content += `<span id="del-btn-${msgId}" class="action-btn delete" onclick="deleteMsg(${msgId})">🗑 Hapus</span>`;
+                    setTimeout(() => {
+                        const btn = document.getElementById(`del-btn-${msgId}`);
+                        if (btn) btn.remove();
+                    }, 60000 - selisihWaktu);
+                }
+            }
+            content += `</div>`;
+            
+            // Tampilan Jam
+            content += `<span class="time-stamp">${formatTime(createdAt)}</span>`;
+            content += `</div>`;
+
+            msgDiv.innerHTML = content;
+            chatBox.appendChild(msgDiv);
+            scrollToBottom();
+        }
+
+        // Feature: Drag and Drop File
+        const dragOverlay = document.getElementById('drag-overlay');
+
+        window.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dragOverlay.classList.remove('hidden');
+        });
+
+        window.addEventListener('dragleave', (e) => {
+            if (e.clientX <= 0 || e.clientY <= 0) {
+                dragOverlay.classList.add('hidden');
+            }
+        });
+
+        window.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dragOverlay.classList.add('hidden');
+            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                sendFile(e.dataTransfer.files[0]);
+            }
+        });
+
+        async function sendFile(file) {
+            if (!file) return;
+
+            if (file.size > 100 * 1024 * 1024) {
+                alert("File terlalu besar! Maksimal 100MB.");
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const res = await fetch('/upload', { method: 'POST', body: formData });
+                const data = await res.json();
+                if (data.filePath) {
+                    socket.emit('chat message', {
+                        username: currentUsername, text: '',
+                        filePath: data.filePath, fileName: file.name,
+                        replyToUser: activeReply ? activeReply.username : '',
+                        replyToText: activeReply ? activeReply.text : ''
+                    });
+                    cancelReply();
+                } else {
+                    alert('Gagal upload file.');
+                }
+            } catch (err) {
+                alert('Error upload: ' + err.message);
+            }
+            document.getElementById('file-input').value = '';
+        }
+
+        function openImagePreview(src) {
+            document.getElementById('preview-src').src = src;
+            document.getElementById('img-modal').classList.remove('hidden');
+        }
+        function closeImagePreview() {
+            document.getElementById('img-modal').classList.add('hidden');
+        }
+
+        function editMsg(id) {
+            const currentText = document.getElementById(`text-${id}`).innerText;
+            const newText = prompt("Edit pesan kamu:", currentText);
+            if (newText !== null && newText.trim() !== "" && newText !== currentText) {
+                socket.emit('edit message', { id, newText: newText.trim(), username: currentUsername });
+            }
+        }
+
+        function deleteMsg(id) {
+            if (confirm("Hapus pesan ini?")) {
+                socket.emit('delete message', { id, username: currentUsername });
+            }
+        }
+
+        socket.on('message edited', (data) => {
+            const el = document.getElementById(`text-${data.id}`);
+            if (el) el.innerText = data.newText + " (edited)";
+        });
+
+        socket.on('message deleted', (data) => {
+            const el = document.getElementById(`msg-${data.id}`);
+            if (el) el.remove();
+        });
+
+        socket.on('delete error', (msg) => { alert(msg); });
+
+        socket.on('chat history', (history) => {
+            document.getElementById('chat-box').innerHTML = '';
+            if (Array.isArray(history)) history.forEach(appendMessage);
+            setTimeout(scrollToBottom, 100);
+        });
+        socket.on('chat message', appendMessage);
+
+        function setReply(username, text) {
+            activeReply = { username, text };
+            document.getElementById('reply-target-user').innerText = `Membalas ${username}`;
+            document.getElementById('reply-target-text').innerText = text.substring(0, 45) + (text.length > 45 ? '...' : '');
+            document.getElementById('reply-preview').classList.remove('hidden');
+            document.getElementById('msg-input').focus();
+        }
+
+        function cancelReply() {
+            activeReply = null;
+            document.getElementById('reply-preview').classList.add('hidden');
+        }
+
+        function sendMessage() {
+            const input = document.getElementById('msg-input');
+            const text = input.value.trim();
+            if (text) {
+                socket.emit('chat message', { 
+                    username: currentUsername, text,
+                    replyToUser: activeReply ? activeReply.username : '',
+                    replyToText: activeReply ? activeReply.text : ''
+                });
+                input.value = '';
+                cancelReply();
+            }
+        }
+
+        async function toggleRecord() {
+            const icon = document.getElementById('vn-icon');
+            if (!isRecording) {
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return alert('Media recorder tidak didukung');
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    const formData = new FormData();
+                    formData.append('file', audioBlob, 'voicenote.webm');
+                    try {
+                        const res = await fetch('/upload', { method: 'POST', body: formData });
+                        const data = await res.json();
+                        if (data.filePath) {
+                            socket.emit('chat message', {
+                                username: currentUsername, text: '',
+                                filePath: data.filePath, fileName: 'voicenote.webm',
+                                replyToUser: activeReply ? activeReply.username : '',
+                                replyToText: activeReply ? activeReply.text : ''
+                            });
+                            cancelReply();
+                        }
+                    } catch (err) { alert('Gagal upload voice note: ' + err.message); }
+                    stream.getTracks().forEach(track => track.stop());
+                };
+                mediaRecorder.start();
+                isRecording = true;
+                icon.setAttribute('stroke', '#d9534f');
+                icon.innerHTML = '<rect x="5" y="5" width="14" height="14" rx="1" fill="#d9534f" stroke="none"/>';
+            } else {
+                mediaRecorder.stop();
+                isRecording = false;
+                icon.setAttribute('stroke', '#54656f');
+                icon.innerHTML = `<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" x2="12" y1="18" y2="22"/>`;
+            }
+        }
+
+        document.getElementById('msg-input').addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(); });
+        function changeUsername() {
+            if (confirm("Ganti nama?")) { localStorage.removeItem('chat_username'); window.location.reload(); }
+        }
+        document.getElementById('username-input').addEventListener('keypress', (e) => { if (e.key === 'Enter') login(); });
+        function showChatScreen() {
+            document.getElementById('login-screen').classList.add('hidden');
+            document.getElementById('chat-screen').classList.remove('hidden');
+            document.getElementById('user-display').innerText = `${currentUsername}`;
+            socket.emit('join chat', currentUsername);
+        }
+
+        socket.on('update user list', (users) => {
+            const container = document.getElementById('users-container');
+            container.innerHTML = '';
+            users.forEach(user => {
+                let userSpan = document.createElement('span');
+                userSpan.style.marginRight = "15px";
+                userSpan.innerHTML = `<strong>${user}</strong>`;
+                if (currentUsername === 'admin' && user !== 'admin') {
+                    userSpan.innerHTML += ` <button onclick="kick('${user}')" style="background:#d9534f; color:white; border:none; border-radius:3px; font-size:10px; cursor:pointer; padding:2px 5px; margin-left:3px;">Kick</button>`;
+                }
+                container.appendChild(userSpan);
+            });
+        });
+
+        function kick(targetUser) { if (confirm(`Kick ${targetUser}?`)) socket.emit('kick user', targetUser); }
+        socket.on('you are kicked', () => {
+            alert('Kamu telah dikeluarkan dari grup!');
+            localStorage.removeItem('chat_username');
+            window.location.reload();
+        });
+    </script>
+</body>
+</html>
