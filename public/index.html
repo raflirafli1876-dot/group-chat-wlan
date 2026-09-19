@@ -162,7 +162,7 @@
             const msgId = data.id || data[0];
             const username = data.username || data[1];
             const text = data.text !== undefined ? data.text : data[2];
-            const filePath = data.filePath !== undefined ? data.filePath : data[3];
+            const filePath = data.filePath !== undefined ? data.filePath : (data.fileData !== undefined ? data.fileData : data[3]);
             const fileName = data.fileName !== undefined ? data.fileName : data[4];
             const replyToUser = data.replyToUser !== undefined ? data.replyToUser : data[5];
             const replyToText = data.replyToText !== undefined ? data.replyToText : data[6];
@@ -255,10 +255,16 @@
             }
 
             const formData = new FormData();
-            formData.append('file', file);
+            // Pastikan filename asli terkirim dengan benar
+            formData.append('file', file, file.name);
 
             try {
                 const res = await fetch('/upload', { method: 'POST', body: formData });
+                if (!res.ok) {
+                    const err = await res.json();
+                    alert('Gagal upload: ' + (err.error || res.status));
+                    return;
+                }
                 const data = await res.json();
                 if (data.filePath) {
                     socket.emit('chat message', {
